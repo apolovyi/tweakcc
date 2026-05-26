@@ -22,8 +22,7 @@
     "lint": "tsc --noEmit && eslint src",
     "test": "vitest run",
     "test:dev": "vitest",
-    "format": "prettier --write src",
-    "prepare": "husky"
+    "format": "prettier --write src"
   },
   "keywords": [
     "cli",
@@ -58,8 +57,6 @@
     "eslint": "^9.33.0",
     "eslint-plugin-react": "^7.37.5",
     "globals": "^16.3.0",
-    "husky": "^9.1.7",
-    "lint-staged": "^16.2.7",
     "prettier": "^3.6.2",
     "tsdown": "^0.18.4",
     "tsx": "^4.20.3",
