@@ -23,7 +23,8 @@ function validateInput(text, minLength = 500) {
   if (text.startsWith('This is the git status')) return true;
 
   // Include the system reminder accompanying every Read tool.
-  if (text.includes('Whenever you read a file, you should consider whether it')) return true;
+  if (text.includes('Whenever you read a file, you should consider whether it'))
+    return true;
 
   // Another prompt smaller then 500 characters that should be included
   if (text.includes('IMPORTANT: Assist with authorized security testing'))
