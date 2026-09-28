@@ -75,7 +75,7 @@ function validateInput(text, minLength = 500) {
     return false;
   }
 
-  const sentencePattern = /[.!?]\s+[A-Z\(]/;
+  const sentencePattern = /[.!?]\s+[A-Z(]/;
   const hasSentences = sentencePattern.test(text);
   if (!hasSentences) {
     return false;
@@ -218,10 +218,6 @@ function extractStrings(filepath, minLength = 500) {
       for (const id of allIdentifiers) {
         // Find the ${ before this identifier (search backwards from id.start)
         let beforeIdentifier = fullContent.substring(lastPos, id.start);
-
-        // Find the } after this identifier (search forwards from id.end)
-        // We need to find the matching closing brace for the interpolation
-        let afterIdentifierStart = id.end;
 
         // Add the piece including everything up to and including just before the identifier
         pieces.push(beforeIdentifier);
@@ -375,9 +371,6 @@ function mergeWithExisting(newData, oldData, currentVersion) {
       };
     }
 
-    // Check if there's any old prompt without a version (we should add current version)
-    const oldWithoutVersion = oldData.prompts.find(oldItem => !oldItem.version);
-
     // New prompt or old prompt didn't have version - add current version
     console.log(
       `No match for item ${idx}: ${JSON.stringify(newContent.slice(0, 100))}`
@@ -495,7 +488,12 @@ if (require.main === module) {
   });
 
   // Remove start/end fields before writing
-  mergedResult.prompts = mergedResult.prompts.map(({ start, end, ...rest }) => rest);
+  mergedResult.prompts = mergedResult.prompts.map(prompt => {
+    const rest = { ...prompt };
+    delete rest.start;
+    delete rest.end;
+    return rest;
+  });
 
   // Add version as top-level field
   const outputData = {
