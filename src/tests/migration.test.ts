@@ -1,13 +1,24 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-import { describe, it, vi, expect } from 'vitest';
+import { describe, it, vi, expect, beforeEach, afterEach } from 'vitest';
 import { DEFAULT_SETTINGS } from '../defaultSettings';
 import { readConfigFile } from '../config';
 import { migrateConfigIfNeeded } from '../migration';
 import { createEnoent } from './testHelpers';
 
 describe('userMessageDisplay migration', () => {
+  // readConfigFile persists the migrated config; without these stubs each test
+  // overwrites the developer's real ~/.tweakcc/config.json with its fixture.
+  beforeEach(() => {
+    vi.spyOn(fs, 'writeFile').mockResolvedValue(undefined);
+    vi.spyOn(fs, 'mkdir').mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('should migrate old prefix/message structure to new format string', async () => {
     const oldConfig = {
       ccVersion: '1.0.0',
