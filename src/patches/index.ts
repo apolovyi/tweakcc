@@ -101,21 +101,9 @@ import {
 } from './preventUnsupportedUpdates';
 import type {
   ExtractedBunCorpus,
-  ExtractedBunModule,
   BunModuleReplacement,
 } from '../nativeInstallation';
-
-/** Decode executable sources according to Bun's serialized string encoding. */
-function nativeSource(module: ExtractedBunModule): string {
-  // Bun 1.4.1 reused the never-written Utf8 tag (2) for little-endian UTF-16;
-  // decoding it as UTF-8 corrupts source before the updater matcher sees it.
-  // The enum and to_wtf_string agree on 0=UTF-8, 1=Latin-1, 2=UTF-16:
-  // https://github.com/oven-sh/bun/blob/4661e494f052c83c80dade1318e5710238340be6/src/standalone_graph/StandaloneModuleGraph.rs#L407-L419
-  if (module.encoding === 2) return module.contents.toString('utf16le');
-  if (module.encoding === 1) return module.contents.toString('latin1');
-  if (module.encoding === 0) return module.contents.toString('utf8');
-  throw new Error(`Unsupported Bun source encoding: ${module.encoding}`);
-}
+import { decodeNativeModuleSource } from '../lib/content';
 
 export { showDiff, showPositionalDiff, globalReplace } from './patchDiffing';
 export {
@@ -676,7 +664,7 @@ export const applyCustomization = async (
       throw new Error('Native entrypoint is not a JavaScript module');
     }
     const claudeJsBuffer = entry
-      ? Buffer.from(nativeSource(entry), 'utf8')
+      ? Buffer.from(decodeNativeModuleSource(entry), 'utf8')
       : await extractClaudeJsFromNativeInstallation(pathToExtractFrom);
 
     if (!claudeJsBuffer) {
@@ -716,7 +704,7 @@ export const applyCustomization = async (
   );
   const modulePromptResult = nativeModules
     ? await applySystemPromptsToSources(
-        nativeModules.map(nativeSource),
+        nativeModules.map(decodeNativeModuleSource),
         ccInstInfo.version,
         undefined,
         patchFilter,
@@ -1072,7 +1060,8 @@ export const applyCustomization = async (
         const sources = modules.map(module =>
           module.isEntrypoint
             ? c
-            : (nativePromptSources.get(module.index) ?? nativeSource(module))
+            : (nativePromptSources.get(module.index) ??
+              decodeNativeModuleSource(module))
         );
         const patched = writePreventUnsupportedUpdatesModules(sources);
         if (!patched) return null;
@@ -1118,7 +1107,7 @@ export const applyCustomization = async (
   const nativeEdits = new Map<number, BunModuleReplacement>();
   for (const module of nativeModules ?? []) {
     const patched = nativePromptSources.get(module.index)!;
-    if (patched !== nativeSource(module)) {
+    if (patched !== decodeNativeModuleSource(module)) {
       nativeEdits.set(module.index, {
         index: module.index,
         name: module.name,
@@ -1199,7 +1188,7 @@ export const applyCustomization = async (
       const edits = nativeModuleEdits.filter(
         edit => edit.index !== entry.index
       );
-      if (content !== nativeSource(entry)) {
+      if (content !== decodeNativeModuleSource(entry)) {
         edits.push({
           index: entry.index,
           name: entry.name,

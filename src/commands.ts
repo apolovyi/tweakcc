@@ -13,7 +13,12 @@ import chalk from 'chalk';
 import { formatAndDiff } from './formatAndDiff';
 
 import { tryDetectInstallation } from './lib/detection';
-import { readContent, writeContent } from './lib/content';
+import {
+  ContentSources,
+  readContent,
+  readContentSources,
+  writeContent,
+} from './lib/content';
 import { Installation } from './lib/types';
 import {
   findChalkVar,
@@ -464,6 +469,67 @@ export async function handleRepack(
 // Subcommand: adhoc-patch
 // =============================================================================
 
+/** One match inside one source; `replacement` is already resolved. */
+interface SourceHit {
+  sourceIndex: number;
+  start: number;
+  end: number;
+  replacement: string;
+}
+
+/**
+ * Replace only the Nth (1-based) hit, numbering hits across sources in order.
+ * Exits with an error when nothing matched or the index is out of range.
+ */
+function replaceNthHit(
+  originals: readonly string[],
+  hits: readonly SourceHit[],
+  index: number,
+  unit: string
+): string[] {
+  if (index < 1 || index > hits.length) {
+    console.error(
+      chalk.red(
+        `Error: Index ${index} is out of range. Found ${hits.length} ${unit}.`
+      )
+    );
+    process.exit(1);
+  }
+  const hit = hits[index - 1];
+  const modified = [...originals];
+  const content = modified[hit.sourceIndex];
+  modified[hit.sourceIndex] =
+    content.slice(0, hit.start) + hit.replacement + content.slice(hit.end);
+  return modified;
+}
+
+/**
+ * Show a diff per changed source and write only after every one is approved.
+ * Returns false when the user declines any of them.
+ */
+async function approveAndWriteSources(
+  contentSources: ContentSources,
+  modified: readonly string[],
+  skipConfirmation: boolean
+): Promise<boolean> {
+  const { sources } = contentSources;
+  for (const [i, source] of sources.entries()) {
+    if (modified[i] === source.content) continue;
+    if (sources.length > 1) console.log(chalk.gray(`Module: ${source.label}`));
+    if (
+      !(await promptUserForDiffApproval(
+        source.content,
+        modified[i],
+        skipConfirmation
+      ))
+    ) {
+      return false;
+    }
+  }
+  await contentSources.write(modified);
+  return true;
+}
+
 /**
  * Apply a string replacement patch.
  */
@@ -474,67 +540,49 @@ async function handleAdhocPatchString(
   installation: Installation,
   skipConfirmation = false
 ): Promise<void> {
-  const content = await readContent(installation);
-
-  let modified: string;
-  let count: number;
-
-  if (index !== undefined) {
-    // Replace only the Nth occurrence (1-based)
-    const occurrences: number[] = [];
-    let pos = 0;
-    while (true) {
-      const found = content.indexOf(oldString, pos);
-      if (found === -1) break;
-      occurrences.push(found);
-      pos = found + oldString.length;
-    }
-
-    if (occurrences.length === 0) {
-      console.error(chalk.red('Error: String not found in content.'));
-      process.exit(1);
-    }
-
-    if (index < 1 || index > occurrences.length) {
-      console.error(
-        chalk.red(
-          `Error: Index ${index} is out of range. Found ${occurrences.length} occurrence(s).`
-        )
-      );
-      process.exit(1);
-    }
-
-    const replaceAt = occurrences[index - 1];
-    modified =
-      content.slice(0, replaceAt) +
-      newString +
-      content.slice(replaceAt + oldString.length);
-    count = 1;
-  } else {
-    // Replace all occurrences
-    // Use split/join for literal string replacement (no regex escaping needed)
-    const parts = content.split(oldString);
-    count = parts.length - 1;
-
-    if (count === 0) {
-      console.error(chalk.red('Error: String not found in content.'));
-      process.exit(1);
-    }
-
-    modified = parts.join(newString);
+  if (oldString === '') {
+    console.error(chalk.red('Error: <old-string> must not be empty.'));
+    process.exit(1);
   }
 
-  const approved = await promptUserForDiffApproval(
-    content,
-    modified,
-    skipConfirmation
-  );
-  if (!approved) {
+  const contentSources = await readContentSources(installation);
+  const originals = contentSources.sources.map(source => source.content);
+
+  const hits: SourceHit[] = originals.flatMap((content, sourceIndex) => {
+    const found: SourceHit[] = [];
+    for (
+      let pos = content.indexOf(oldString);
+      pos !== -1;
+      pos = content.indexOf(oldString, pos + oldString.length)
+    ) {
+      found.push({
+        sourceIndex,
+        start: pos,
+        end: pos + oldString.length,
+        replacement: newString,
+      });
+    }
+    return found;
+  });
+
+  if (hits.length === 0) {
+    console.error(chalk.red('Error: String not found in content.'));
+    process.exit(1);
+  }
+
+  // split/join is a literal replacement: no regex escaping or `$` patterns.
+  const modified =
+    index !== undefined
+      ? replaceNthHit(originals, hits, index, 'occurrence(s)')
+      : originals.map(content => content.split(oldString).join(newString));
+  const count = index !== undefined ? 1 : hits.length;
+
+  if (
+    !(await approveAndWriteSources(contentSources, modified, skipConfirmation))
+  ) {
     console.log(chalk.yellow('Aborted.'));
     return;
   }
-
-  await writeContent(installation, modified);
 
   console.log(
     chalk.green(
@@ -600,8 +648,6 @@ async function handleAdhocPatchRegex(
   installation: Installation,
   skipConfirmation = false
 ): Promise<void> {
-  const content = await readContent(installation);
-
   let parsed: { pattern: string; flags: string };
   try {
     parsed = parseRegexLiteral(rawPattern);
@@ -614,67 +660,41 @@ async function handleAdhocPatchRegex(
   // Ensure 'g' flag is present for matchAll / replaceAll
   const flags = parsed.flags.includes('g') ? parsed.flags : parsed.flags + 'g';
 
-  let modified: string;
-  let count: number;
-
   const regex = new RegExp(parsed.pattern, flags);
 
-  if (index !== undefined) {
-    // Replace only the Nth match (1-based)
-    const matches = [...content.matchAll(regex)];
+  const contentSources = await readContentSources(installation);
+  const originals = contentSources.sources.map(source => source.content);
 
-    if (matches.length === 0) {
-      console.error(chalk.red('Error: Regex pattern not found in content.'));
-      process.exit(1);
-    }
+  const hits: SourceHit[] = originals.flatMap((content, sourceIndex) =>
+    [...content.matchAll(regex)].map(match => ({
+      sourceIndex,
+      start: match.index!,
+      end: match.index! + match[0].length,
+      // Build the replacement string with group substitutions
+      replacement: match[0].replace(
+        new RegExp(parsed.pattern, parsed.flags),
+        replacement
+      ),
+    }))
+  );
 
-    if (index < 1 || index > matches.length) {
-      console.error(
-        chalk.red(
-          `Error: Index ${index} is out of range. Found ${matches.length} match(es).`
-        )
-      );
-      process.exit(1);
-    }
-
-    const match = matches[index - 1];
-    const matchStart = match.index!;
-    const matchEnd = matchStart + match[0].length;
-
-    // Build the replacement string with group substitutions
-    const resolvedReplacement = match[0].replace(
-      new RegExp(parsed.pattern, parsed.flags),
-      replacement
-    );
-
-    modified =
-      content.slice(0, matchStart) +
-      resolvedReplacement +
-      content.slice(matchEnd);
-    count = 1;
-  } else {
-    // Replace all matches
-    modified = content.replace(regex, replacement);
-    // Count matches
-    count = [...content.matchAll(new RegExp(parsed.pattern, flags))].length;
-
-    if (count === 0) {
-      console.error(chalk.red('Error: Regex pattern not found in content.'));
-      process.exit(1);
-    }
+  if (hits.length === 0) {
+    console.error(chalk.red('Error: Regex pattern not found in content.'));
+    process.exit(1);
   }
 
-  const approved = await promptUserForDiffApproval(
-    content,
-    modified,
-    skipConfirmation
-  );
-  if (!approved) {
+  const modified =
+    index !== undefined
+      ? replaceNthHit(originals, hits, index, 'match(es)')
+      : originals.map(content => content.replace(regex, replacement));
+  const count = index !== undefined ? 1 : hits.length;
+
+  if (
+    !(await approveAndWriteSources(contentSources, modified, skipConfirmation))
+  ) {
     console.log(chalk.yellow('Aborted.'));
     return;
   }
-
-  await writeContent(installation, modified);
 
   console.log(
     chalk.green(
